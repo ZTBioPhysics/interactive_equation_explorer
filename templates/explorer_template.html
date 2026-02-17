@@ -779,6 +779,97 @@ const plotConfig = {
   displayModeBar: false,
 };
 
+// Dynamic annotations (expressions evaluated with current slider values)
+const interactiveAnnotations = interactive.annotations || [];
+
+function evalAnnotationVal(val, params) {
+  if (typeof val === 'number') return val;
+  if (typeof val === 'string') {
+    try { return math.evaluate(val, params); } catch(e) { return parseFloat(val) || 0; }
+  }
+  return 0;
+}
+
+function buildDynamicAnnotations() {
+  const params = getParamValues();
+  const shapes = [];
+  const annotations = [];
+  const dashMap = { dashed: 'dash', dotted: 'dot', solid: 'solid' };
+
+  interactiveAnnotations.forEach(a => {
+    const dash = dashMap[a.style] || 'dash';
+    const color = a.color || '#888';
+
+    if (a.type === 'hline') {
+      const yVal = evalAnnotationVal(a.y, params);
+      shapes.push({
+        type: 'line', xref: 'paper', x0: 0, x1: 1,
+        yref: 'y', y0: yVal, y1: yVal,
+        line: { color, width: 1.5, dash },
+      });
+      if (a.label) {
+        annotations.push({
+          x: 1, xref: 'paper', xanchor: 'right',
+          y: yVal, yref: 'y', yanchor: 'bottom',
+          text: a.label, showarrow: false,
+          font: { color, size: 11 },
+          bgcolor: 'rgba(26,26,46,0.7)', borderpad: 3,
+        });
+      }
+    } else if (a.type === 'vline') {
+      const xVal = evalAnnotationVal(a.x, params);
+      shapes.push({
+        type: 'line', yref: 'paper', y0: 0, y1: 1,
+        xref: 'x', x0: xVal, x1: xVal,
+        line: { color, width: 1.5, dash },
+      });
+      if (a.label) {
+        annotations.push({
+          x: xVal, xref: 'x', xanchor: 'left',
+          y: 1, yref: 'paper', yanchor: 'top',
+          text: '  ' + a.label, showarrow: false,
+          font: { color, size: 11 },
+          bgcolor: 'rgba(26,26,46,0.7)', borderpad: 3,
+        });
+      }
+    } else if (a.type === 'point') {
+      const xVal = evalAnnotationVal(a.x, params);
+      const yVal = evalAnnotationVal(a.y, params);
+      annotations.push({
+        x: xVal, xref: 'x',
+        y: yVal, yref: 'y',
+        text: a.label || '', showarrow: true,
+        arrowhead: 2, arrowsize: 1, arrowcolor: color,
+        font: { color, size: 11 },
+        bgcolor: 'rgba(26,26,46,0.7)', borderpad: 3,
+      });
+    } else if (a.type === 'region') {
+      const xr = (a.x_range || [0, 1]).map(v => evalAnnotationVal(v, params));
+      shapes.push({
+        type: 'rect', xref: 'x', yref: 'paper',
+        x0: xr[0], x1: xr[1], y0: 0, y1: 1,
+        fillcolor: color, opacity: a.alpha || 0.08,
+        line: { width: 0 },
+      });
+      if (a.label) {
+        annotations.push({
+          x: (xr[0] + xr[1]) / 2, xref: 'x',
+          y: 0.02, yref: 'paper', yanchor: 'bottom',
+          text: a.label, showarrow: false,
+          font: { color, size: 10 },
+        });
+      }
+    }
+  });
+
+  return { shapes, annotations };
+}
+
+function getPlotLayoutWithAnnotations() {
+  const { shapes, annotations } = buildDynamicAnnotations();
+  return Object.assign({}, plotLayout, { shapes, annotations });
+}
+
 // Initial plot
 function initPlot() {
   const { xs, ys } = evaluateCurve();
@@ -790,7 +881,7 @@ function initPlot() {
     line: { color: '#4ECDC4', width: 2.5 },
     name: outputSpec.label,
   };
-  Plotly.newPlot('plot-container', [trace], plotLayout, plotConfig);
+  Plotly.newPlot('plot-container', [trace], getPlotLayoutWithAnnotations(), plotConfig);
 }
 
 // Update plot on slider change
@@ -803,7 +894,7 @@ function updatePlot() {
     mode: 'lines',
     line: { color: '#4ECDC4', width: 2.5 },
     name: outputSpec.label,
-  }], plotLayout);
+  }], getPlotLayoutWithAnnotations());
 }
 
 // Slider event listeners
@@ -906,39 +997,50 @@ function buildAnnTraces(evaluated) {
 }
 
 // Build Plotly annotation shapes & labels from spec annotations
-function buildAnnShapesAndLabels() {
+// Accepts current param values so expression-valued x/y fields update dynamically
+function buildAnnShapesAndLabels(params) {
   const shapes = [];
   const labels = [];
   if (!annAnnotations) return { shapes, labels };
+
+  function evalVal(v) {
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string') {
+      try { return math.evaluate(v, params); } catch(e) { return parseFloat(v) || 0; }
+    }
+    return v;
+  }
 
   annAnnotations.forEach(a => {
     const dashMap = { dashed: 'dash', dotted: 'dot', solid: 'solid' };
     const dash = dashMap[a.style] || 'dash';
 
     if (a.type === 'hline') {
+      const yVal = evalVal(a.y);
       shapes.push({
         type: 'line', xref: 'paper', x0: 0, x1: 1,
-        yref: 'y', y0: a.y, y1: a.y,
+        yref: 'y', y0: yVal, y1: yVal,
         line: { color: a.color || '#888', width: 1.5, dash: dash },
       });
       if (a.label) {
         labels.push({
           x: 1, xref: 'paper', xanchor: 'right',
-          y: a.y, yref: 'y', yanchor: 'bottom',
+          y: yVal, yref: 'y', yanchor: 'bottom',
           text: a.label, showarrow: false,
           font: { color: a.color || '#888', size: 11 },
           bgcolor: 'rgba(26,26,46,0.7)', borderpad: 3,
         });
       }
     } else if (a.type === 'vline') {
+      const xVal = evalVal(a.x);
       shapes.push({
         type: 'line', yref: 'paper', y0: 0, y1: 1,
-        xref: 'x', x0: a.x, x1: a.x,
+        xref: 'x', x0: xVal, x1: xVal,
         line: { color: a.color || '#888', width: 1.5, dash: dash },
       });
       if (a.label) {
         labels.push({
-          x: a.x, xref: 'x', xanchor: 'left',
+          x: xVal, xref: 'x', xanchor: 'left',
           y: 1, yref: 'paper', yanchor: 'top',
           text: '  ' + a.label, showarrow: false,
           font: { color: a.color || '#888', size: 11 },
@@ -946,16 +1048,18 @@ function buildAnnShapesAndLabels() {
         });
       }
     } else if (a.type === 'point') {
+      const xVal = evalVal(a.x);
+      const yVal = evalVal(a.y);
       labels.push({
-        x: a.x, xref: 'x',
-        y: a.y, yref: 'y',
+        x: xVal, xref: 'x',
+        y: yVal, yref: 'y',
         text: a.label || '', showarrow: true,
         arrowhead: 2, arrowsize: 1, arrowcolor: a.color || '#888',
         font: { color: a.color || '#888', size: 11 },
         bgcolor: 'rgba(26,26,46,0.7)', borderpad: 3,
       });
     } else if (a.type === 'region') {
-      const xr = a.x_range || [0, 1];
+      const xr = (a.x_range || [0, 1]).map(v => evalVal(v));
       shapes.push({
         type: 'rect', xref: 'x', yref: 'paper',
         x0: xr[0], x1: xr[1], y0: 0, y1: 1,
@@ -976,9 +1080,8 @@ function buildAnnShapesAndLabels() {
   return { shapes, labels };
 }
 
-// Layout for annotator plot
-const { shapes: annShapes, labels: annLabels } = buildAnnShapesAndLabels();
-const annPlotLayout = {
+// Base layout for annotator plot (annotations added dynamically)
+const annPlotLayoutBase = {
   paper_bgcolor: 'rgba(0,0,0,0)',
   plot_bgcolor: 'rgba(26,26,46,0.5)',
   font: { color: '#cccccc', family: '-apple-system, sans-serif' },
@@ -996,12 +1099,16 @@ const annPlotLayout = {
   margin: { t: 30, r: 30, b: 50, l: 60 },
   showlegend: compiledCurves.length > 1,
   legend: { font: { color: '#cccccc' }, bgcolor: 'rgba(26,26,46,0.7)' },
-  shapes: annShapes,
-  annotations: annLabels,
 };
 
 if (annYRange) {
-  annPlotLayout.yaxis.range = annYRange;
+  annPlotLayoutBase.yaxis.range = annYRange;
+}
+
+function getAnnPlotLayout() {
+  const params = getAnnParamValues();
+  const { shapes, labels } = buildAnnShapesAndLabels(params);
+  return Object.assign({}, annPlotLayoutBase, { shapes, annotations: labels });
 }
 
 const annPlotConfig = { responsive: true, displayModeBar: false };
@@ -1009,13 +1116,13 @@ const annPlotConfig = { responsive: true, displayModeBar: false };
 function initAnnPlot() {
   const evaluated = evaluateAnnCurves();
   const traces = buildAnnTraces(evaluated);
-  Plotly.newPlot('plot-container', traces, annPlotLayout, annPlotConfig);
+  Plotly.newPlot('plot-container', traces, getAnnPlotLayout(), annPlotConfig);
 }
 
 function updateAnnPlot() {
   const evaluated = evaluateAnnCurves();
   const traces = buildAnnTraces(evaluated);
-  Plotly.react('plot-container', traces, annPlotLayout);
+  Plotly.react('plot-container', traces, getAnnPlotLayout());
 }
 
 // Slider listeners for annotator plot

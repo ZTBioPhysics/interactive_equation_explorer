@@ -22,7 +22,7 @@ python generate_explorer.py -i /path/to/Equation_Annotator/output/the_hill_equat
   - **`interactive` block** (explorer-native): single math.js expression with named variables/sliders
   - **`plot` block** (from Equation_Annotator): multi-curve numpy expressions, auto-converted to math.js, with annotations and auto-generated sliders
 - Supported spec fields: `title`, `segments` (with `superscript`), `groups`, `description`, `symbols` (grouped by type), `constants` (legacy), `use_cases`, `insight`, `interactive`, `plot`
-- Label overlap detection spreads crowded annotations automatically
+- Label overlap detection spreads crowded segment annotations and group bracket labels automatically
 
 ## Key Dependencies
 - Python: jinja2
