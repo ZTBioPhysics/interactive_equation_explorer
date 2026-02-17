@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 
-{% if has_interactive %}
+{% if has_interactive or has_annotator_plot %}
 <!-- Plotly for plotting -->
 <script src="https://cdn.jsdelivr.net/npm/plotly.js@2.27.0/dist/plotly.min.js"></script>
 <!-- math.js for safe expression evaluation -->
@@ -83,6 +83,17 @@
     opacity: 0.9;
   }
 
+  .segment-col.superscript {
+    align-self: flex-start;
+    margin-left: -0.15em;
+  }
+
+  .segment-col.superscript .katex-seg {
+    font-size: 1.45rem;
+    position: relative;
+    top: -0.35em;
+  }
+
   /* SVG connector overlay */
   .connector-svg {
     position: absolute;
@@ -144,6 +155,47 @@
     color: #bbbbbb;
   }
 
+  .symbols-section {
+    font-size: 0.85rem;
+    color: #aaaaaa;
+    line-height: 1.6;
+    margin-bottom: 0.8rem;
+    text-align: left;
+    display: inline-block;
+  }
+
+  .symbols-section .sym-type-header {
+    font-weight: 600;
+    color: #bbbbbb;
+    text-transform: capitalize;
+    margin-top: 0.5rem;
+  }
+
+  .symbols-section .sym-type-header:first-child {
+    margin-top: 0;
+  }
+
+  .symbols-section .sym-entry {
+    margin-left: 0.5rem;
+  }
+
+  .symbols-section .sym-name {
+    color: #cccccc;
+  }
+
+  .insight-section {
+    font-size: 0.85rem;
+    color: #bbbbbb;
+    font-style: italic;
+    line-height: 1.55;
+    background: rgba(78, 205, 196, 0.06);
+    border-left: 3px solid rgba(78, 205, 196, 0.35);
+    padding: 0.8rem 1.2rem;
+    border-radius: 0 8px 8px 0;
+    margin-bottom: 1.5rem;
+    white-space: pre-line;
+  }
+
   .use-cases-list {
     list-style: none;
     font-size: 0.82rem;
@@ -155,7 +207,7 @@
     content: "\2022  ";
   }
 
-  {% if has_interactive %}
+  {% if has_interactive or has_annotator_plot %}
   /* ── Slider controls ──────────────────────────────────── */
   .controls-panel {
     background: rgba(255, 255, 255, 0.03);
@@ -261,7 +313,7 @@
     .segment-col .katex-seg { font-size: 1.5rem; }
     .slider-label { min-width: 100px; font-size: 0.8rem; }
     .slider-value { min-width: 60px; font-size: 0.8rem; }
-    {% if has_interactive %}
+    {% if has_interactive or has_annotator_plot %}
     #plot-container { height: 300px; }
     {% endif %}
   }
@@ -277,7 +329,7 @@
   <div class="equation-panel" id="equation-panel">
     <div class="equation-row" id="equation-row">
       {% for seg in segments %}
-      <div class="segment-col" data-seg-index="{{ loop.index0 }}">
+      <div class="segment-col{% if seg.superscript %} superscript{% endif %}" data-seg-index="{{ loop.index0 }}">
         <span class="katex-seg" data-latex="{{ seg.latex_clean }}" data-color="{{ seg.color }}"></span>
         {% if seg.label %}
         <span class="seg-label" style="color: {{ seg.color }}">{{ seg.label_html }}</span>
@@ -310,12 +362,27 @@
   </div>
 
   <!-- Description & use cases -->
-  {% if description or use_cases or constants or auto_variables %}
+  {% if description or use_cases or constants or symbols or auto_variables %}
   <div class="info-panel">
     {% if description %}
     <p class="description-text">{{ description }}</p>
     {% endif %}
-    {% if constants %}
+    {% if symbols %}
+    <div class="symbols-section">
+      {% for type_name in ["variable", "parameter", "constant", "other"] %}
+      {% if type_name in symbols_by_type %}
+      <div class="sym-type-header">{{ type_name }}s:</div>
+      {% for s in symbols_by_type[type_name] %}
+      <div class="sym-entry">
+        <span class="katex-inline" data-latex="{{ s.symbol }}"></span>
+        {% if s.name %}<span class="sym-name"> ({{ s.name }})</span>{% endif %}
+        &mdash; {{ s.description }}
+      </div>
+      {% endfor %}
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% elif constants %}
     <div class="constants-section">
       <span class="const-header">Constants:</span><br>
       {% for c in constants %}
@@ -341,8 +408,37 @@
   </div>
   {% endif %}
 
-  {% if has_interactive %}
-  <!-- Slider controls -->
+  <!-- Insight -->
+  {% if insight %}
+  <div class="insight-section">{{ insight }}</div>
+  {% endif %}
+
+  {% if has_annotator_plot %}
+  <!-- Annotator-style plot: sliders + multi-curve chart -->
+  {% if ann_plot.sliders %}
+  <div class="controls-panel">
+    <div class="controls-title">Adjust Parameters</div>
+    {% for s in ann_plot.sliders %}
+    <div class="slider-group">
+      <span class="slider-label">
+        <span class="katex-param" data-latex="{{ s.latex }}"></span>
+        {% if s.unit %}<span style="color:#888; font-size:0.8rem">({{ s.unit }})</span>{% endif %}
+      </span>
+      <input type="range" class="slider-input" id="slider-{{ s.name }}"
+             min="{{ s.min }}" max="{{ s.max }}" value="{{ s.default }}" step="{{ s.step }}"
+             data-var="{{ s.name }}">
+      <span class="slider-value" id="value-{{ s.name }}">{{ s.default }}</span>
+    </div>
+    {% endfor %}
+    <button class="reset-btn" id="reset-btn">Reset to defaults</button>
+  </div>
+  {% endif %}
+
+  <div class="plot-panel">
+    <div id="plot-container"></div>
+  </div>
+  {% elif has_interactive %}
+  <!-- Interactive-style plot: single expression + sliders -->
   <div class="controls-panel">
     <div class="controls-title">Adjust Parameters</div>
     {% for v in parameters %}
@@ -360,7 +456,6 @@
     <button class="reset-btn" id="reset-btn">Reset to defaults</button>
   </div>
 
-  <!-- Plot -->
   <div class="plot-panel">
     <div id="plot-container"></div>
   </div>
@@ -372,6 +467,7 @@
 // ── Spec data (embedded by Python generator) ──────────────
 const SPEC = {{ spec_json }};
 const HAS_INTERACTIVE = {{ 'true' if has_interactive else 'false' }};
+const HAS_ANNOTATOR_PLOT = {{ 'true' if has_annotator_plot else 'false' }};
 
 // ── KaTeX rendering ───────────────────────────────────────
 document.querySelectorAll('.katex-seg').forEach(el => {
@@ -516,8 +612,44 @@ function drawGroupBrackets() {
   });
 }
 
+// ── Spread overlapping labels ─────────────────────────────
+function spreadLabels() {
+  const labels = Array.from(document.querySelectorAll('.seg-label'));
+  if (labels.length < 2) return;
+
+  // Reset any previously-added spacing so we recalculate from scratch
+  document.querySelectorAll('.segment-col').forEach(col => {
+    col.style.marginLeft = '';
+    col.style.marginRight = '';
+  });
+
+  const MIN_GAP = 10; // minimum px between adjacent labels
+  let changed = true;
+  let iterations = 0;
+
+  while (changed && iterations < 8) {
+    changed = false;
+    iterations++;
+
+    for (let i = 0; i < labels.length - 1; i++) {
+      const rectA = labels[i].getBoundingClientRect();
+      const rectB = labels[i + 1].getBoundingClientRect();
+      const overlap = rectA.right + MIN_GAP - rectB.left;
+
+      if (overlap > 0) {
+        // Push the right label's segment-col further right
+        const colB = labels[i + 1].closest('.segment-col');
+        const current = parseFloat(colB.style.marginLeft) || 0;
+        colB.style.marginLeft = (current + overlap) + 'px';
+        changed = true;
+      }
+    }
+  }
+}
+
 // ── Draw annotations after layout settles ─────────────────
 function drawAnnotations() {
+  spreadLabels();
   drawConnectors();
   drawGroupBrackets();
 }
@@ -654,6 +786,219 @@ document.getElementById('reset-btn').addEventListener('click', () => {
 // Initialize on load
 window.addEventListener('load', () => {
   initPlot();
+});
+{% endif %}
+
+{% if has_annotator_plot %}
+// ── Annotator-style multi-curve plot ──────────────────────
+const annCurves = {{ ann_plot.curves | tojson }};
+const annFixedParams = {{ ann_plot.fixed_params | tojson }};
+const annSliders = {{ ann_plot.sliders | tojson }};
+const annXRange = {{ ann_plot.x_range | tojson }};
+const annYRange = {{ ann_plot.y_range | tojson }};
+const annAnnotations = {{ ann_plot.annotations | tojson }};
+const annNumPoints = {{ ann_plot.num_points }};
+
+// Compile each curve expression
+const compiledCurves = annCurves.map(c => ({
+  compiled: math.compile(c.expr),
+  color: c.color,
+  label: c.label,
+  style: c.style,
+  linewidth: c.linewidth,
+  curveParams: c.curve_parameters || {},
+}));
+
+// Read slider values
+function getAnnParamValues() {
+  const scope = Object.assign({}, annFixedParams);
+  annSliders.forEach(s => {
+    scope[s.name] = parseFloat(document.getElementById('slider-' + s.name).value);
+  });
+  return scope;
+}
+
+// Evaluate all curves
+function evaluateAnnCurves() {
+  const baseScope = getAnnParamValues();
+  const xMin = annXRange[0];
+  const xMax = annXRange[1];
+  const dx = (xMax - xMin) / (annNumPoints - 1);
+
+  return compiledCurves.map(curve => {
+    const xs = [];
+    const ys = [];
+    for (let i = 0; i < annNumPoints; i++) {
+      const xVal = xMin + i * dx;
+      const scope = Object.assign({}, baseScope, curve.curveParams, { x: xVal });
+      xs.push(xVal);
+      try {
+        ys.push(curve.compiled.evaluate(scope));
+      } catch(e) {
+        ys.push(NaN);
+      }
+    }
+    return { xs, ys, color: curve.color, label: curve.label, style: curve.style, linewidth: curve.linewidth };
+  });
+}
+
+// Build Plotly traces from evaluated curves
+function buildAnnTraces(evaluated) {
+  return evaluated.map(ev => ({
+    x: ev.xs,
+    y: ev.ys,
+    type: 'scatter',
+    mode: 'lines',
+    line: {
+      color: ev.color,
+      width: ev.linewidth || 2,
+      dash: ev.style === '--' ? 'dash' : ev.style === ':' ? 'dot' : ev.style === '-.' ? 'dashdot' : 'solid',
+    },
+    name: ev.label,
+  }));
+}
+
+// Build Plotly annotation shapes & labels from spec annotations
+function buildAnnShapesAndLabels() {
+  const shapes = [];
+  const labels = [];
+  if (!annAnnotations) return { shapes, labels };
+
+  annAnnotations.forEach(a => {
+    const dashMap = { dashed: 'dash', dotted: 'dot', solid: 'solid' };
+    const dash = dashMap[a.style] || 'dash';
+
+    if (a.type === 'hline') {
+      shapes.push({
+        type: 'line', xref: 'paper', x0: 0, x1: 1,
+        yref: 'y', y0: a.y, y1: a.y,
+        line: { color: a.color || '#888', width: 1.5, dash: dash },
+      });
+      if (a.label) {
+        labels.push({
+          x: 1, xref: 'paper', xanchor: 'right',
+          y: a.y, yref: 'y', yanchor: 'bottom',
+          text: a.label, showarrow: false,
+          font: { color: a.color || '#888', size: 11 },
+          bgcolor: 'rgba(26,26,46,0.7)', borderpad: 3,
+        });
+      }
+    } else if (a.type === 'vline') {
+      shapes.push({
+        type: 'line', yref: 'paper', y0: 0, y1: 1,
+        xref: 'x', x0: a.x, x1: a.x,
+        line: { color: a.color || '#888', width: 1.5, dash: dash },
+      });
+      if (a.label) {
+        labels.push({
+          x: a.x, xref: 'x', xanchor: 'left',
+          y: 1, yref: 'paper', yanchor: 'top',
+          text: '  ' + a.label, showarrow: false,
+          font: { color: a.color || '#888', size: 11 },
+          bgcolor: 'rgba(26,26,46,0.7)', borderpad: 3,
+        });
+      }
+    } else if (a.type === 'point') {
+      labels.push({
+        x: a.x, xref: 'x',
+        y: a.y, yref: 'y',
+        text: a.label || '', showarrow: true,
+        arrowhead: 2, arrowsize: 1, arrowcolor: a.color || '#888',
+        font: { color: a.color || '#888', size: 11 },
+        bgcolor: 'rgba(26,26,46,0.7)', borderpad: 3,
+      });
+    } else if (a.type === 'region') {
+      const xr = a.x_range || [0, 1];
+      shapes.push({
+        type: 'rect', xref: 'x', yref: 'paper',
+        x0: xr[0], x1: xr[1], y0: 0, y1: 1,
+        fillcolor: a.color || 'rgba(168,230,207,0.08)',
+        opacity: a.alpha || 0.08,
+        line: { width: 0 },
+      });
+      if (a.label) {
+        labels.push({
+          x: (xr[0] + xr[1]) / 2, xref: 'x',
+          y: 0.02, yref: 'paper', yanchor: 'bottom',
+          text: a.label, showarrow: false,
+          font: { color: a.color || '#888', size: 10 },
+        });
+      }
+    }
+  });
+  return { shapes, labels };
+}
+
+// Layout for annotator plot
+const { shapes: annShapes, labels: annLabels } = buildAnnShapesAndLabels();
+const annPlotLayout = {
+  paper_bgcolor: 'rgba(0,0,0,0)',
+  plot_bgcolor: 'rgba(26,26,46,0.5)',
+  font: { color: '#cccccc', family: '-apple-system, sans-serif' },
+  xaxis: {
+    title: {{ ann_plot.x_label | tojson }},
+    range: annXRange,
+    gridcolor: 'rgba(255,255,255,0.08)',
+    zerolinecolor: 'rgba(255,255,255,0.15)',
+  },
+  yaxis: {
+    title: {{ ann_plot.y_label | tojson }},
+    gridcolor: 'rgba(255,255,255,0.08)',
+    zerolinecolor: 'rgba(255,255,255,0.15)',
+  },
+  margin: { t: 30, r: 30, b: 50, l: 60 },
+  showlegend: compiledCurves.length > 1,
+  legend: { font: { color: '#cccccc' }, bgcolor: 'rgba(26,26,46,0.7)' },
+  shapes: annShapes,
+  annotations: annLabels,
+};
+
+if (annYRange) {
+  annPlotLayout.yaxis.range = annYRange;
+}
+
+const annPlotConfig = { responsive: true, displayModeBar: false };
+
+function initAnnPlot() {
+  const evaluated = evaluateAnnCurves();
+  const traces = buildAnnTraces(evaluated);
+  Plotly.newPlot('plot-container', traces, annPlotLayout, annPlotConfig);
+}
+
+function updateAnnPlot() {
+  const evaluated = evaluateAnnCurves();
+  const traces = buildAnnTraces(evaluated);
+  Plotly.react('plot-container', traces, annPlotLayout);
+}
+
+// Slider listeners for annotator plot
+annSliders.forEach(s => {
+  const slider = document.getElementById('slider-' + s.name);
+  const valueDisplay = document.getElementById('value-' + s.name);
+  if (!slider) return;
+  slider.addEventListener('input', () => {
+    const decimals = (s.step.toString().split('.')[1] || '').length || 0;
+    valueDisplay.textContent = parseFloat(slider.value).toFixed(decimals);
+    updateAnnPlot();
+  });
+});
+
+// Reset button
+const annResetBtn = document.getElementById('reset-btn');
+if (annResetBtn) {
+  annResetBtn.addEventListener('click', () => {
+    annSliders.forEach(s => {
+      const slider = document.getElementById('slider-' + s.name);
+      const valueDisplay = document.getElementById('value-' + s.name);
+      slider.value = s.default;
+      valueDisplay.textContent = s.default;
+    });
+    updateAnnPlot();
+  });
+}
+
+window.addEventListener('load', () => {
+  initAnnPlot();
 });
 {% endif %}
 </script>

@@ -65,6 +65,8 @@ def load_spec(path):
     data.setdefault("description", None)
     data.setdefault("use_cases", [])
     data.setdefault("constants", [])
+    data.setdefault("symbols", [])
+    data.setdefault("insight", None)
 
     return data
 
@@ -91,6 +93,97 @@ def _get_group_levels(groups):
         return []
     levels = sorted({g.get("level", 1) for g in groups})
     return levels
+
+
+def _numpy_to_mathjs(expr):
+    """Convert a numpy-style expression to math.js syntax.
+
+    Handles: np.log → log, np.sin → sin, np.pi → pi, ** → ^, etc.
+    """
+    # Replace np.func(...) calls
+    expr = re.sub(r'np\.', '', expr)
+    # Python ** exponent → math.js ^
+    expr = expr.replace('**', '^')
+    return expr
+
+
+def _build_annotator_plot(plot_spec, symbols):
+    """Prepare an annotator-style plot block for template rendering.
+
+    Determines which parameters get sliders (skip physical constants),
+    converts numpy expressions to math.js, and builds slider configs.
+
+    Returns dict with keys: curves, sliders, fixed_params, x_range, y_range,
+    x_label, y_label, plot_title, annotations.
+    """
+    params = plot_spec.get("parameters", {})
+    curves = plot_spec.get("curves", [])
+    annotations = plot_spec.get("annotations", [])
+
+    # Identify per-curve parameters (used to differentiate curves, not sliders)
+    per_curve_names = set()
+    for c in curves:
+        per_curve_names.update(c.get("curve_parameters", {}).keys())
+
+    # Build set of constant symbol names from the symbols list
+    constant_names = set()
+    if symbols:
+        for s in symbols:
+            if s.get("type") == "constant":
+                constant_names.add(s["symbol"])
+
+    # Decide which parameters get sliders vs stay fixed
+    sliders = []
+    fixed_params = {}
+    for name, value in params.items():
+        if name in per_curve_names or name in constant_names:
+            fixed_params[name] = value
+        else:
+            # Auto-generate slider range
+            if value > 0:
+                lo = round(value * 0.2, 6)
+                hi = round(value * 3.0, 6)
+            elif value < 0:
+                lo = round(value * 3.0, 6)
+                hi = round(value * 0.2, 6)
+            else:
+                lo, hi = -10.0, 10.0
+            step = round((hi - lo) / 200, 6)
+            sliders.append({
+                "name": name,
+                "latex": name,
+                "min": lo,
+                "max": hi,
+                "default": value,
+                "step": step,
+                "unit": "",
+            })
+            fixed_params[name] = value  # also include as default
+
+    # Convert curve expressions
+    converted_curves = []
+    for c in curves:
+        converted_curves.append({
+            "expr": _numpy_to_mathjs(c["expr"]),
+            "color": c.get("color", "#4ECDC4"),
+            "label": c.get("label", ""),
+            "style": c.get("style", "-"),
+            "linewidth": c.get("linewidth", 2),
+            "curve_parameters": c.get("curve_parameters", {}),
+        })
+
+    return {
+        "curves": converted_curves,
+        "sliders": sliders,
+        "fixed_params": fixed_params,
+        "x_range": plot_spec.get("x_range", [0, 10]),
+        "y_range": plot_spec.get("y_range", None),
+        "x_label": plot_spec.get("x_label", "x"),
+        "y_label": plot_spec.get("y_label", "y"),
+        "plot_title": plot_spec.get("title", ""),
+        "annotations": annotations,
+        "num_points": plot_spec.get("num_points", 300),
+    }
 
 
 def render_html(spec, template_dir, output_path):
@@ -121,6 +214,13 @@ def render_html(spec, template_dir, output_path):
     template = env.get_template("explorer_template.html")
 
     has_interactive = "interactive" in spec and spec["interactive"] is not None
+    # Annotator-style plot: top-level "plot" with "curves", no "interactive"
+    has_annotator_plot = (
+        not has_interactive
+        and "plot" in spec
+        and spec["plot"] is not None
+        and "curves" in spec.get("plot", {})
+    )
     segments = _prepare_segments(spec["segments"])
     groups = spec.get("groups", [])
     # Ensure each group has a level field
@@ -138,12 +238,23 @@ def render_html(spec, template_dir, output_path):
                 parameters.append(v)
             all_variables.append(v)
 
-    # Auto-generate variable descriptions from interactive block when no
-    # explicit constants are provided.  This ensures every interactive spec
-    # gets a variables section without duplicating info into a constants block.
+    # Prefer `symbols` (new format) over `constants` (legacy).
+    # Group symbols by type for the template.
+    symbols = spec.get("symbols", [])
     constants = spec.get("constants", [])
+    symbols_by_type = {}
+    if symbols:
+        for sym in symbols:
+            sym_type = sym.get("type", "other")
+            symbols_by_type.setdefault(sym_type, []).append(sym)
+
+    insight = spec.get("insight", None)
+
+    # Auto-generate variable descriptions from interactive block when no
+    # explicit constants or symbols are provided.  This ensures every
+    # interactive spec gets a variables section without duplicating info.
     auto_variables = []
-    if not constants and all_variables:
+    if not constants and not symbols and all_variables:
         output = spec["interactive"].get("output", {})
         # Include the output variable first
         if output:
@@ -168,6 +279,11 @@ def render_html(spec, template_dir, output_path):
                 "description": f"{desc} — {role_tag}",
             })
 
+    # Process annotator-style plot if present
+    ann_plot = None
+    if has_annotator_plot:
+        ann_plot = _build_annotator_plot(spec["plot"], symbols)
+
     html = template.render(
         title=spec.get("title", "Equation Explorer"),
         segments=segments,
@@ -176,8 +292,13 @@ def render_html(spec, template_dir, output_path):
         description=spec.get("description"),
         use_cases=spec.get("use_cases", []),
         constants=constants,
+        symbols=symbols,
+        symbols_by_type=symbols_by_type,
         auto_variables=auto_variables,
+        insight=insight,
         has_interactive=has_interactive,
+        has_annotator_plot=has_annotator_plot,
+        ann_plot=ann_plot,
         parameters=parameters,
         spec_json=json.dumps(spec, indent=None),
     )
