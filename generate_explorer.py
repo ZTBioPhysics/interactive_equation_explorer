@@ -29,6 +29,7 @@ BATCH_DIR = None                # Path to directory of JSON specs (renders all)
 OUTPUT_DIR = "output"           # Where to write generated HTML files
 TEMPLATE_DIR = "templates"      # Directory containing Jinja2 templates
 OPEN_IN_BROWSER = False         # Auto-open generated HTML in default browser
+VALIDATE_DESCRIPTIONS = True    # Use Claude API to check description/insight vs plot
 # ============================================================================
 
 
@@ -160,6 +161,38 @@ def _build_annotator_plot(plot_spec, symbols):
             })
             fixed_params[name] = value  # also include as default
 
+    # Build reverse map: default_value -> slider_name so annotation positions that
+    # equal a slider's default can be replaced with the parameter name string.
+    # If two sliders share the same default the mapping is ambiguous — skip those.
+    _val_to_slider = {}
+    for s in sliders:
+        v = s["default"]
+        if v not in _val_to_slider:
+            _val_to_slider[v] = s["name"]
+        else:
+            _val_to_slider[v] = None  # ambiguous: mark as un-replaceable
+
+    def _make_dynamic(val):
+        """Replace a hardcoded numeric value with a slider param name if it matches."""
+        if not isinstance(val, (int, float)):
+            return val
+        mapped = _val_to_slider.get(val)
+        # mapped is None either because val isn't a slider default, or it's ambiguous
+        return mapped if mapped is not None else val
+
+    # Post-process annotations: replace hardcoded values that match a slider's
+    # default with the slider name so they update when the slider moves.
+    dynamic_annotations = []
+    for ann in annotations:
+        ann = dict(ann)
+        if "y" in ann:
+            ann["y"] = _make_dynamic(ann["y"])
+        if "x" in ann:
+            ann["x"] = _make_dynamic(ann["x"])
+        if "x_range" in ann:
+            ann["x_range"] = [_make_dynamic(v) for v in ann["x_range"]]
+        dynamic_annotations.append(ann)
+
     # Convert curve expressions
     converted_curves = []
     for c in curves:
@@ -180,10 +213,112 @@ def _build_annotator_plot(plot_spec, symbols):
         "y_range": plot_spec.get("y_range", None),
         "x_label": plot_spec.get("x_label", "x"),
         "y_label": plot_spec.get("y_label", "y"),
+        "log_x_axis": plot_spec.get("log_x_axis", False),
+        "log_y_axis": plot_spec.get("log_y_axis", False),
         "plot_title": plot_spec.get("title", ""),
-        "annotations": annotations,
+        "annotations": dynamic_annotations,
         "num_points": plot_spec.get("num_points", 300),
     }
+
+
+def _validate_spec_consistency(spec, plot_info):
+    """Check description/insight text against plot config using pattern rules.
+
+    Catches common mismatches (log-axis keywords vs actual axis scale,
+    "appears linear" claims on non-log axes, stale parameter values in text)
+    without needing an external API.
+
+    Parameters
+    ----------
+    spec : dict
+        The full equation spec, used to extract description and insight.
+    plot_info : dict
+        Normalised plot summary with keys: x_label, y_label, x_range,
+        log_x_axis, log_y_axis, curve_exprs, sliders, fixed_params, annotations.
+
+    Returns
+    -------
+    list[str]
+        Issue descriptions (empty list if consistent).
+    """
+    issues = []
+    description = (spec.get("description") or "")
+    insight = (spec.get("insight") or "")
+    text = f"{description}\n{insight}".strip()
+    if not text:
+        return issues
+    text_lower = text.lower()
+
+    # ── Rule 1: Log-axis claim in text vs actual axis setting ──────────
+    # Match phrases that describe the AXIS as logarithmic (not the curve)
+    log_axis_phrases = [
+        r'on\s+a\s+logarithmic\b',            # "on a logarithmic Q axis"
+        r'logarithmic\s+\w*\s*axis',           # "logarithmic x-axis"
+        r'\blog\b[₁₀10]*\s*\w*\s*axis',        # "log Q axis", "log₁₀ axis"
+        r'\blog\s+scale\b',                     # "log scale"
+        r'plotted\s+on\s+a\s+log\b',            # "plotted on a log"
+    ]
+    has_log_axis_claim = any(re.search(p, text_lower) for p in log_axis_phrases)
+    if has_log_axis_claim and not plot_info.get("log_x_axis"):
+        issues.append(
+            'Text describes a logarithmic axis but log_x_axis is not set '
+            '(add "log_x_axis": true to the plot spec)'
+        )
+
+    # ── Rule 2: "appears linear" / "straight line" + log curve on linear axis
+    linear_claim = re.search(
+        r'appear\w*\s+linear|straight[\s-]+line|making\s+it\s+(?:appear\s+)?linear',
+        text_lower,
+    )
+    curve_exprs = " ".join(plot_info.get("curve_exprs", []))
+    has_log_in_expr = bool(re.search(r'\blog\b|\bln\b', curve_exprs))
+    if linear_claim and has_log_in_expr and not plot_info.get("log_x_axis"):
+        issues.append(
+            "Text says the curve appears linear but the expression uses log/ln "
+            "on a linear axis (it would look curved, not straight)"
+        )
+
+    # ── Rule 3: Parameter value claims vs actual defaults ─────────────
+    # Match "name = value" patterns including Unicode symbols
+    param_pattern = (
+        r'([A-Za-z\u0394\u03b8][A-Za-z\u2080-\u2089_\u00b0°]*)'  # name
+        r'\s*[=≈]\s*'                                               # = or ≈
+        r'([−\-+]?\s*[0-9]*\.?[0-9]+)'                             # value
+    )
+    param_claims = re.findall(param_pattern, text)
+    slider_params = {s["name"]: s["default"] for s in plot_info.get("sliders", [])}
+    fixed_params = plot_info.get("fixed_params", {})
+    all_params = {**fixed_params, **slider_params}
+
+    def _normalise(s):
+        return s.lower().replace("_", "").replace("°", "").replace("\u00b0", "")
+
+    for name_in_text, value_str in param_claims:
+        try:
+            claimed = float(value_str.replace("\u2212", "-").replace(" ", ""))
+        except ValueError:
+            continue
+        for param_name, actual in all_params.items():
+            if _normalise(name_in_text) == _normalise(param_name):
+                tol = max(abs(actual) * 0.01, 0.01)
+                if abs(claimed - actual) > tol:
+                    issues.append(
+                        f"Text says {name_in_text} = {value_str.strip()} "
+                        f"but actual default is {param_name} = {actual}"
+                    )
+
+    # ── Rule 4: x-range spans >2 orders of magnitude but no log axis ─
+    x_range = plot_info.get("x_range", [0, 1])
+    if (len(x_range) == 2
+            and x_range[0] > 0
+            and x_range[1] / x_range[0] > 100
+            and not plot_info.get("log_x_axis")):
+        issues.append(
+            f"x-range spans {x_range[1]/x_range[0]:.0f}x ({x_range}) "
+            f"without a log axis — consider adding \"log_x_axis\": true"
+        )
+
+    return issues
 
 
 def render_html(spec, template_dir, output_path):
@@ -283,6 +418,45 @@ def render_html(spec, template_dir, output_path):
     ann_plot = None
     if has_annotator_plot:
         ann_plot = _build_annotator_plot(spec["plot"], symbols)
+
+    # Validate description/insight text against the actual plot configuration
+    if VALIDATE_DESCRIPTIONS and (has_annotator_plot or has_interactive):
+        if has_annotator_plot and ann_plot is not None:
+            plot_info = {
+                "x_label": ann_plot["x_label"],
+                "y_label": ann_plot["y_label"],
+                "x_range": ann_plot["x_range"],
+                "log_x_axis": ann_plot["log_x_axis"],
+                "log_y_axis": ann_plot["log_y_axis"],
+                "curve_exprs": [c["expr"] for c in ann_plot["curves"]],
+                "sliders": ann_plot["sliders"],
+                "fixed_params": ann_plot["fixed_params"],
+                "annotations": ann_plot["annotations"],
+            }
+        else:
+            # Interactive block — build plot_info from the interactive spec
+            iv = spec["interactive"]
+            indep = next((v for v in iv.get("variables", []) if v.get("role") == "independent"), {})
+            plot_info = {
+                "x_label": iv.get("plot", {}).get("x_axis", {}).get("label", indep.get("name", "x")),
+                "y_label": iv.get("plot", {}).get("y_axis", {}).get("label", iv.get("output", {}).get("label", "y")),
+                "x_range": [indep.get("min", 0), indep.get("max", 10)],
+                "log_x_axis": False,
+                "log_y_axis": False,
+                "curve_exprs": [iv.get("expression", "")],
+                "sliders": [
+                    {"name": v["name"], "default": v.get("default", 0)}
+                    for v in iv.get("variables", [])
+                    if v.get("role") == "parameter"
+                ],
+                "fixed_params": {},
+                "annotations": iv.get("annotations", []),
+            }
+        issues = _validate_spec_consistency(spec, plot_info)
+        if issues:
+            print(f"  WARNING — description/plot mismatch in '{spec.get('title', output_path.stem)}':")
+            for issue in issues:
+                print(f"    • {issue}")
 
     html = template.render(
         title=spec.get("title", "Equation Explorer"),

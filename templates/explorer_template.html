@@ -936,6 +936,8 @@ const annXRange = {{ ann_plot.x_range | tojson }};
 const annYRange = {{ ann_plot.y_range | tojson }};
 const annAnnotations = {{ ann_plot.annotations | tojson }};
 const annNumPoints = {{ ann_plot.num_points }};
+const annLogX = {{ 'true' if ann_plot.log_x_axis else 'false' }};
+const annLogY = {{ 'true' if ann_plot.log_y_axis else 'false' }};
 
 // Compile each curve expression
 const compiledCurves = annCurves.map(c => ({
@@ -961,13 +963,17 @@ function evaluateAnnCurves() {
   const baseScope = getAnnParamValues();
   const xMin = annXRange[0];
   const xMax = annXRange[1];
-  const dx = (xMax - xMin) / (annNumPoints - 1);
+  // Use logarithmically-spaced x values for log axes so curves appear smooth
+  const logXMin = annLogX ? Math.log10(xMin) : 0;
+  const logXMax = annLogX ? Math.log10(xMax) : 0;
 
   return compiledCurves.map(curve => {
     const xs = [];
     const ys = [];
     for (let i = 0; i < annNumPoints; i++) {
-      const xVal = xMin + i * dx;
+      const xVal = annLogX
+        ? Math.pow(10, logXMin + i * (logXMax - logXMin) / (annNumPoints - 1))
+        : xMin + i * (xMax - xMin) / (annNumPoints - 1);
       const scope = Object.assign({}, baseScope, curve.curveParams, { x: xVal });
       xs.push(xVal);
       try {
@@ -1081,18 +1087,23 @@ function buildAnnShapesAndLabels(params) {
 }
 
 // Base layout for annotator plot (annotations added dynamically)
+// For log axes, Plotly range values must be in log10 units
 const annPlotLayoutBase = {
   paper_bgcolor: 'rgba(0,0,0,0)',
   plot_bgcolor: 'rgba(26,26,46,0.5)',
   font: { color: '#cccccc', family: '-apple-system, sans-serif' },
   xaxis: {
     title: {{ ann_plot.x_label | tojson }},
-    range: annXRange,
+    type: annLogX ? 'log' : '-',
+    range: annLogX
+      ? [Math.log10(annXRange[0]), Math.log10(annXRange[1])]
+      : annXRange,
     gridcolor: 'rgba(255,255,255,0.08)',
     zerolinecolor: 'rgba(255,255,255,0.15)',
   },
   yaxis: {
     title: {{ ann_plot.y_label | tojson }},
+    type: annLogY ? 'log' : '-',
     gridcolor: 'rgba(255,255,255,0.08)',
     zerolinecolor: 'rgba(255,255,255,0.15)',
   },
@@ -1102,7 +1113,9 @@ const annPlotLayoutBase = {
 };
 
 if (annYRange) {
-  annPlotLayoutBase.yaxis.range = annYRange;
+  annPlotLayoutBase.yaxis.range = annLogY
+    ? [Math.log10(annYRange[0]), Math.log10(annYRange[1])]
+    : annYRange;
 }
 
 function getAnnPlotLayout() {
